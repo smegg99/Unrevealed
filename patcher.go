@@ -3,6 +3,7 @@ package unrevealed
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,8 @@ const (
 	modernVersionURL  = "https://googlechromelabs.github.io/chrome-for-testing/latest-versions-per-milestone-with-downloads.json"
 	legacyDownloadURL = "https://chromedriver.storage.googleapis.com/%s/chromedriver_%s.zip"
 	modernDownloadURL = "https://storage.googleapis.com/chrome-for-testing-public/%s/%s/chromedriver-%s.zip"
+
+	defaultMaxDownloadSize int64 = 100 << 20 // 100 MB
 )
 
 const (
@@ -53,6 +56,19 @@ type Patcher struct {
 	DataDir      string
 	platform     string
 	exeName      string
+
+	// MaxDownloadSize is the maximum permitted archive size in bytes.
+	// Default: 100 MB.
+	MaxDownloadSize int64
+
+	// ExpectedSHA256 optionally pins the download to a specific hash.
+	// When non-empty, Run verifies the downloaded archive matches this
+	// hex-encoded SHA256 digest.
+	ExpectedSHA256 string
+
+	// DownloadSHA256 is populated after Run with the hex-encoded SHA256
+	// of the downloaded archive. Can be used for auditing or pinning.
+	DownloadSHA256 string
 }
 
 // NewPatcher creates a patcher for the given Chrome major version.
@@ -67,29 +83,27 @@ func NewPatcher(majorVersion int) *Patcher {
 
 // Run downloads the matching ChromeDriver and patches it.
 // Returns the path to the patched binary.
-func (p *Patcher) Run() (string, error) {
-	prepare := func() error {
-		if err := os.MkdirAll(p.DataDir, 0o755); err != nil {
-			return err
-		}
-		p.DriverPath = filepath.Join(p.DataDir, randomHex(8)+"_"+p.exeName)
-		return nil
+func (p *Patcher) Run(ctx context.Context) (string, error) {
+	if p.MaxDownloadSize == 0 {
+		p.MaxDownloadSize = defaultMaxDownloadSize
 	}
 
-	fetchAndDownload := func() ([]byte, error) {
-		version, err := p.fetchVersion()
-		if err != nil {
-			return nil, fmt.Errorf("fetch version: %w", err)
-		}
-		// slog.Info("resolved chromedriver version", "version", version)
-		return p.download(version)
-	}
-
-	if err := prepare(); err != nil {
+	if err := os.MkdirAll(p.DataDir, 0o755); err != nil {
 		return "", fmt.Errorf("prepare: %w", err)
 	}
 
-	data, err := fetchAndDownload()
+	hex, err := randomHex(8)
+	if err != nil {
+		return "", fmt.Errorf("prepare: %w", err)
+	}
+	p.DriverPath = filepath.Join(p.DataDir, hex+"_"+p.exeName)
+
+	version, err := p.fetchVersion(ctx)
+	if err != nil {
+		return "", fmt.Errorf("fetch version: %w", err)
+	}
+
+	data, err := p.download(ctx, version)
 	if err != nil {
 		return "", fmt.Errorf("download: %w", err)
 	}
@@ -102,7 +116,6 @@ func (p *Patcher) Run() (string, error) {
 		return "", fmt.Errorf("patch: %w", err)
 	}
 
-	// slog.Info("chromedriver ready", "path", p.DriverPath)
 	return p.DriverPath, nil
 }
 

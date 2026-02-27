@@ -9,6 +9,9 @@ func StealthScripts() []string {
 		scriptChrome,
 		scriptPermissions,
 		scriptFnToString,
+		scriptWebGL,
+		scriptHardware,
+		scriptCanvas,
 	}
 }
 
@@ -19,8 +22,6 @@ func StealthFlags() map[string]string {
 		"disable-blink-features":   "AutomationControlled",
 		"no-first-run":             "",
 		"no-default-browser-check": "",
-		"no-sandbox":               "",
-		"window-size":              "1920,1080",
 		"start-maximized":          "",
 		"disable-infobars":         "",
 	}
@@ -108,43 +109,6 @@ window.navigator.permissions.__proto__.query = (parameters) =>
     : originalQuery(parameters);
 `
 
-// Mock navigator.plugins as a proper PluginArray and fix related navigator properties.
-// var scriptPlugins = `
-// (() => {
-//   const makePlugin = (obj) => {
-//     const p = Object.create(Plugin.prototype);
-//     Object.assign(p, obj);
-//     p.length = 1;
-//     p[0] = { type: 'application/pdf', suffixes: 'pdf', description: obj.description || '', enabledPlugin: p };
-//     return p;
-//   };
-
-//   const plugins = [
-//     makePlugin({ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }),
-//     makePlugin({ name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' }),
-//     makePlugin({ name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }),
-//   ];
-
-//   const pluginArray = Object.create(PluginArray.prototype);
-//   plugins.forEach((p, i) => { pluginArray[i] = p; });
-//   Object.defineProperty(pluginArray, 'length', { get: () => plugins.length });
-//   pluginArray.item = (i) => pluginArray[i];
-//   pluginArray.namedItem = (name) => plugins.find(p => p.name === name);
-//   pluginArray.refresh = () => {};
-//   pluginArray[Symbol.iterator] = function* () { for (let i = 0; i < plugins.length; i++) yield pluginArray[i]; };
-
-//   Object.defineProperty(navigator, 'plugins', { get: () => pluginArray });
-// })();
-
-// Object.defineProperty(navigator, 'languages', {
-//   get: () => ['en-US', 'en'],
-// });
-// if (navigator.connection) {
-//   Object.defineProperty(navigator.connection, 'rtt', { get: () => 100 });
-// }
-// Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 1 });
-// `
-
 // Spoof Function.prototype.toString so overridden native functions
 // still return "[native code]" when inspected by detection scripts.
 var scriptFnToString = `
@@ -168,5 +132,67 @@ var scriptFnToString = `
     return oldCall.call(oldToString, this);
   }
   Function.prototype.toString = functionToString;
+})();
+`
+
+// Spoof WebGL renderer and vendor strings so detection scripts cannot
+// identify the GPU as a virtual or headless device.
+var scriptWebGL = `
+(() => {
+  const getParam = WebGLRenderingContext.prototype.getParameter;
+  WebGLRenderingContext.prototype.getParameter = function(p) {
+    if (p === 37445) return 'Google Inc. (Intel)';
+    if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 630, OpenGL 4.5)';
+    return getParam.call(this, p);
+  };
+  if (typeof WebGL2RenderingContext !== 'undefined') {
+    const getParam2 = WebGL2RenderingContext.prototype.getParameter;
+    WebGL2RenderingContext.prototype.getParameter = function(p) {
+      if (p === 37445) return 'Google Inc. (Intel)';
+      if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 630, OpenGL 4.5)';
+      return getParam2.call(this, p);
+    };
+  }
+})();
+`
+
+// Set realistic values for hardware-related navigator properties
+// that differ in headless or automated environments.
+var scriptHardware = `
+Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
+Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+if (navigator.connection) {
+  Object.defineProperty(navigator.connection, 'rtt', { get: () => 50 });
+}
+`
+
+// Add subtle noise to canvas toDataURL and toBlob to defeat
+// canvas fingerprinting without visually breaking pages.
+var scriptCanvas = `
+(() => {
+  const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+  HTMLCanvasElement.prototype.toDataURL = function(type) {
+    const ctx = this.getContext('2d');
+    if (ctx) {
+      const s = ctx.fillStyle;
+      ctx.fillStyle = 'rgba(0,0,1,0.003)';
+      ctx.fillRect(0, 0, 1, 1);
+      ctx.fillStyle = s;
+    }
+    return origToDataURL.apply(this, arguments);
+  };
+  const origToBlob = HTMLCanvasElement.prototype.toBlob;
+  HTMLCanvasElement.prototype.toBlob = function(cb, type, quality) {
+    const ctx = this.getContext('2d');
+    if (ctx) {
+      const s = ctx.fillStyle;
+      ctx.fillStyle = 'rgba(0,0,1,0.003)';
+      ctx.fillRect(0, 0, 1, 1);
+      ctx.fillStyle = s;
+    }
+    return origToBlob.apply(this, arguments);
+  };
 })();
 `
