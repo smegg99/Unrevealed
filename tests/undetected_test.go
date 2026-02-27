@@ -14,6 +14,7 @@ func TestBotSannySoft(t *testing.T) {
 	}
 
 	browser, cleanup, err := unrevealed.New(unrevealed.Config{
+		ChromePath: "/usr/bin/chromium",
 		Headless: false,
 	})
 	if err != nil {

@@ -4,7 +4,6 @@ package unrevealed
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -60,7 +59,7 @@ func New(cfg Config) (*rod.Browser, func(), error) {
 		if err != nil {
 			return nil, err
 		}
-		slog.Info("chrome ready", "ws", wsURL)
+		// slog.Info("chrome ready", "ws", wsURL)
 		b := rod.New().ControlURL(wsURL).NoDefaultDevice()
 		return b, b.Connect()
 	}
@@ -69,7 +68,7 @@ func New(cfg Config) (*rod.Browser, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("find chrome: %w", err)
 	}
-	slog.Info("using chrome", "path", chromePath)
+	// slog.Info("using chrome", "path", chromePath)
 
 	port, err := freePort()
 	if err != nil {

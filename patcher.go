@@ -4,7 +4,6 @@ package unrevealed
 import (
 	"bytes"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -82,7 +81,7 @@ func (p *Patcher) Run() (string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("fetch version: %w", err)
 		}
-		slog.Info("resolved chromedriver version", "version", version)
+		// slog.Info("resolved chromedriver version", "version", version)
 		return p.download(version)
 	}
 
@@ -103,7 +102,7 @@ func (p *Patcher) Run() (string, error) {
 		return "", fmt.Errorf("patch: %w", err)
 	}
 
-	slog.Info("chromedriver ready", "path", p.DriverPath)
+	// slog.Info("chromedriver ready", "path", p.DriverPath)
 	return p.DriverPath, nil
 }
 

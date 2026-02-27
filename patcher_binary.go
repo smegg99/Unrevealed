@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -53,7 +52,7 @@ func (p *Patcher) patch() error {
 	re := regexp.MustCompile(cdcPattern)
 	loc := re.FindIndex(data)
 	if loc == nil {
-		slog.Warn("cdc pattern not found, binary may already be patched")
+		// slog.Warn("cdc pattern not found, binary may already be patched")
 		return nil
 	}
 

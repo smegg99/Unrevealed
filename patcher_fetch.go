@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -55,7 +54,7 @@ func (p *Patcher) fetchModernVersion() (string, error) {
 func (p *Patcher) download(version string) ([]byte, error) {
 	url := p.buildDownloadURL(version)
 
-	slog.Info("downloading chromedriver", "url", url)
+	// slog.Info("downloading chromedriver", "url", url)
 
 	resp, err := http.Get(url)
 	if err != nil {
