@@ -4,6 +4,7 @@ package unrevealed
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -37,11 +38,19 @@ func (p *Patcher) extractFile(f *zip.File) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 
-	_, err = io.Copy(out, rc)
-	return err
+	if _, err := io.Copy(out, rc); err != nil {
+		out.Close()
+		os.Remove(p.DriverPath)
+		return err
+	}
+	return out.Close()
 }
+
+// ErrCDCNotFound is returned when the ChromeDriver binary does not contain
+// the cdc_ automation marker. The binary may be already patched or from an
+// unsupported ChromeDriver version.
+var ErrCDCNotFound = errors.New("cdc pattern not found in chromedriver binary")
 
 func (p *Patcher) patch() error {
 	data, err := os.ReadFile(p.DriverPath)
@@ -52,8 +61,7 @@ func (p *Patcher) patch() error {
 	re := regexp.MustCompile(cdcPattern)
 	loc := re.FindIndex(data)
 	if loc == nil {
-		// slog.Warn("cdc pattern not found, binary may already be patched")
-		return nil
+		return ErrCDCNotFound
 	}
 
 	replacement := padToLength([]byte(patchReplacement), loc[1]-loc[0])

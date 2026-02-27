@@ -4,6 +4,7 @@ package unrevealed
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,7 +38,10 @@ func (p *Patcher) darwinPlatform() string {
 }
 
 func defaultDataDir() string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), dataDirName)
+	}
 	switch runtime.GOOS {
 	case "windows":
 		return windowsDataDir(home)
@@ -55,8 +59,10 @@ func windowsDataDir(home string) string {
 	return filepath.Join(home, "AppData", "Roaming", dataDirName)
 }
 
-func randomHex(n int) string {
+func randomHex(n int) (string, error) {
 	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate random hex: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }

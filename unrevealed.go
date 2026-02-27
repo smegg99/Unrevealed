@@ -1,13 +1,13 @@
-// undetected.go
 package unrevealed
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -16,98 +16,91 @@ import (
 
 // Config controls the behavior of the undetected browser.
 type Config struct {
-	// Chrome executable path. Auto-detected if empty.
-	ChromePath string
-
-	// Run Chrome in headless mode.
-	Headless bool
-
-	// User data directory for the Chrome profile. Uses a temp dir if empty.
-	UserDataDir string
-
-	// Additional raw Chrome arguments.
-	ExtraArgs []string
+	ChromePath        string
+	Headless          bool
+	UserDataDir       string
+	ExtraArgs         []string
+	WindowWidth       int
+	WindowHeight      int
+	Language          string
+	ConnectTimeout    time.Duration
+	NoSandbox         bool
+	ChromeDriverPath  string
+	PatchChromeDriver bool
 }
 
-// New launches a stealth-configured Chrome browser and connects go-rod to it.
-func New(cfg Config) (*rod.Browser, func(), error) {
-	resolvePath := func() (string, error) {
-		if cfg.ChromePath != "" {
-			return cfg.ChromePath, nil
+func (c *Config) withDefaults() {
+	if c.WindowWidth == 0 {
+		c.WindowWidth = 1920
+	}
+	if c.WindowHeight == 0 {
+		c.WindowHeight = 1080
+	}
+	if c.Language == "" {
+		c.Language = "en-US"
+	}
+	if c.ConnectTimeout == 0 {
+		c.ConnectTimeout = 15 * time.Second
+	}
+}
+
+// Browser wraps a [rod.Browser] with the underlying Chrome process,
+// providing safe cleanup via [Browser.Close].
+type Browser struct {
+	*rod.Browser
+	cmd     *exec.Cmd
+	tmpDir  string
+	patcher *Patcher
+	mu      sync.Mutex
+	closed  bool
+}
+
+// Close shuts down the browser, kills Chrome, and removes temporary files.
+// Safe to call multiple times.
+func (b *Browser) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return nil
+	}
+	b.closed = true
+
+	var errs []error
+	if b.Browser != nil {
+		if err := b.Browser.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close browser: %w", err))
 		}
-		return FindChrome()
 	}
-
-	setupDataDir := func() (userDataDir, tmpDir string, err error) {
-		if cfg.UserDataDir != "" {
-			return cfg.UserDataDir, "", nil
-		}
-		tmp, err := os.MkdirTemp("", "unrevealed-*")
-		if err != nil {
-			return "", "", err
-		}
-		return tmp, tmp, nil
+	if b.cmd != nil && b.cmd.Process != nil {
+		_ = b.cmd.Process.Kill()
+		_, _ = b.cmd.Process.Wait()
 	}
-
-	startChrome := func(chromePath string, port int, userDataDir string) (*exec.Cmd, error) {
-		cmd := exec.Command(chromePath, chromeArgs(port, userDataDir, cfg)...)
-		return cmd, cmd.Start()
+	if b.patcher != nil {
+		b.patcher.Cleanup()
 	}
+	cleanupTmpDir(b.tmpDir)
+	return errors.Join(errs...)
+}
 
-	connectRod := func(port int) (*rod.Browser, error) {
-		wsURL, err := resolveWSURL(port, 15*time.Second)
-		if err != nil {
-			return nil, err
-		}
-		// slog.Info("chrome ready", "ws", wsURL)
-		b := rod.New().ControlURL(wsURL).NoDefaultDevice()
-		return b, b.Connect()
-	}
+// New launches a stealth-configured Chrome and connects go-rod to it.
+// Set [Config.PatchChromeDriver] or [Config.ChromeDriverPath] to launch
+// through a patched ChromeDriver instead of directly.
+func New(ctx context.Context, cfg Config) (*Browser, error) {
+	cfg.withDefaults()
 
-	chromePath, err := resolvePath()
+	chromePath, err := resolveChromePath(cfg.ChromePath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("find chrome: %w", err)
-	}
-	// slog.Info("using chrome", "path", chromePath)
-
-	port, err := freePort()
-	if err != nil {
-		return nil, nil, fmt.Errorf("free port: %w", err)
+		return nil, fmt.Errorf("find chrome: %w", err)
 	}
 
-	userDataDir, tmpDir, err := setupDataDir()
-	if err != nil {
-		return nil, nil, fmt.Errorf("data dir: %w", err)
+	if cfg.ChromeDriverPath != "" || cfg.PatchChromeDriver {
+		return newViaChromeDriver(ctx, chromePath, cfg)
 	}
-
-	cmd, err := startChrome(chromePath, port, userDataDir)
-	if err != nil {
-		cleanupTmpDir(tmpDir)
-		return nil, nil, fmt.Errorf("start chrome: %w", err)
-	}
-
-	killChrome := func() {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		cleanupTmpDir(tmpDir)
-	}
-
-	browser, err := connectRod(port)
-	if err != nil {
-		killChrome()
-		return nil, nil, fmt.Errorf("connect rod: %w", err)
-	}
-
-	cleanup := func() {
-		_ = browser.Close()
-		killChrome()
-	}
-
-	return browser, cleanup, nil
+	return newDirect(ctx, chromePath, cfg)
 }
 
 // Stealth injects anti-detection scripts into a rod page.
-// Call before navigating to the target URL. Scripts persist across navigations.
+// Call before navigating. Scripts persist across navigations.
 func Stealth(page *rod.Page) error {
 	_ = proto.EmulationClearDeviceMetricsOverride{}.Call(page)
 
@@ -122,67 +115,30 @@ func Stealth(page *rod.Page) error {
 	return nil
 }
 
-func chromeArgs(port int, userDataDir string, cfg Config) []string {
-	args := []string{
-		"--remote-debugging-host=127.0.0.1",
-		fmt.Sprintf("--remote-debugging-port=%d", port),
-		"--user-data-dir=" + userDataDir,
-		"--disable-blink-features=AutomationControlled",
-		"--no-first-run",
-		"--no-default-browser-check",
-		"--no-sandbox",
-		"--test-type",
-		"--window-size=1920,1080",
-		"--start-maximized",
-		"--lang=en-US",
-		"--log-level=0",
+func resolveChromePath(path string) (string, error) {
+	if path != "" {
+		return path, nil
 	}
-
-	if cfg.Headless {
-		args = append(args, "--headless=new")
-	}
-
-	args = append(args, cfg.ExtraArgs...)
-	return args
+	return FindChrome()
 }
 
-func freePort() (int, error) {
+func setupDataDir(userDir string) (userDataDir, tmpDir string, err error) {
+	if userDir != "" {
+		return userDir, "", nil
+	}
+	tmp, err := os.MkdirTemp("", "unrevealed-*")
+	if err != nil {
+		return "", "", err
+	}
+	return tmp, tmp, nil
+}
+
+func freePort() (int, net.Listener, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
-}
-
-func resolveWSURL(port int, timeout time.Duration) (string, error) {
-	url := fmt.Sprintf("http://127.0.0.1:%d/json/version", port)
-	deadline := time.Now().Add(timeout)
-	client := &http.Client{Timeout: 2 * time.Second}
-
-	for time.Now().Before(deadline) {
-		if ws, err := fetchWSURL(client, url); err == nil && ws != "" {
-			return ws, nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return "", fmt.Errorf("timeout waiting for chrome on port %d", port)
-}
-
-func fetchWSURL(client *http.Client, url string) (string, error) {
-	resp, err := client.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var info struct {
-		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return "", err
-	}
-	return info.WebSocketDebuggerURL, nil
+	return l.Addr().(*net.TCPAddr).Port, l, nil
 }
 
 func cleanupTmpDir(dir string) {
