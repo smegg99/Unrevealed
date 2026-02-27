@@ -112,10 +112,6 @@ func chromePaths() []string {
 		}
 		return paths
 	default:
-		return []string{
-			"/snap/bin/chromium",
-			"/var/lib/flatpak/exports/bin/org.chromium.Chromium",
-			"/var/lib/flatpak/exports/bin/com.google.Chrome",
-		}
+		return nil
 	}
 }
