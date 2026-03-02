@@ -16,17 +16,18 @@ import (
 
 // Config controls the behavior of the undetected browser.
 type Config struct {
-	ChromePath        string
-	Headless          bool
-	UserDataDir       string
-	ExtraArgs         []string
-	WindowWidth       int
-	WindowHeight      int
-	Language          string
-	ConnectTimeout    time.Duration
-	NoSandbox         bool
-	ChromeDriverPath  string
-	PatchChromeDriver bool
+	ChromePath        string        // Path to Chrome executable. Auto-detected if empty.
+	Headless          bool          // Run in headless mode. Default true unless VirtualDisplay is enabled.
+	VirtualDisplay    bool          // Use Xvfb virtual display. Implies Headless=false. Default false. Tested on Linux only.
+	UserDataDir       string        // Custom user data directory. Auto-created if empty.
+	ExtraArgs         []string      // Additional command-line arguments to pass to Chrome.
+	WindowWidth       int           // Initial window width. Default 1920.
+	WindowHeight      int           // Initial window height. Default 1080.
+	Language          string        // Browser language (Accept-Language). Default "en-US".
+	ConnectTimeout    time.Duration // Timeout for connecting to Chrome. Default 15s.
+	NoSandbox         bool          // Add --no-sandbox flag. Required in some environments (e.g. root on Linux).
+	ChromeDriverPath  string        // Path to ChromeDriver executable. If set, will launch through ChromeDriver instead of directly.
+	PatchChromeDriver bool          // Whether to patch ChromeDriver for stealth. Only applies if ChromeDriverPath is not set. Default false.
 }
 
 func (c *Config) withDefaults() {
@@ -51,6 +52,7 @@ type Browser struct {
 	cmd     *exec.Cmd
 	tmpDir  string
 	patcher *Patcher
+	xvfb    *Xvfb
 	mu      sync.Mutex
 	closed  bool
 }
@@ -78,6 +80,9 @@ func (b *Browser) Close() error {
 	if b.patcher != nil {
 		b.patcher.Cleanup()
 	}
+	if b.xvfb != nil {
+		_ = b.xvfb.Close()
+	}
 	cleanupTmpDir(b.tmpDir)
 	return errors.Join(errs...)
 }
@@ -88,21 +93,45 @@ func (b *Browser) Close() error {
 func New(ctx context.Context, cfg Config) (*Browser, error) {
 	cfg.withDefaults()
 
+	var xvfb *Xvfb
+	if cfg.VirtualDisplay {
+		cfg.Headless = false
+		var err error
+		xvfb, err = StartXvfb(cfg.WindowWidth, cfg.WindowHeight)
+		if err != nil {
+			return nil, fmt.Errorf("start xvfb: %w", err)
+		}
+	}
+
 	chromePath, err := resolveChromePath(cfg.ChromePath)
 	if err != nil {
+		if xvfb != nil {
+			_ = xvfb.Close()
+		}
 		return nil, fmt.Errorf("find chrome: %w", err)
 	}
 
+	var browser *Browser
 	if cfg.ChromeDriverPath != "" || cfg.PatchChromeDriver {
-		return newViaChromeDriver(ctx, chromePath, cfg)
+		browser, err = newViaChromeDriver(ctx, chromePath, cfg)
+	} else {
+		browser, err = newDirect(ctx, chromePath, cfg, xvfb)
 	}
-	return newDirect(ctx, chromePath, cfg)
+	if err != nil {
+		if xvfb != nil {
+			_ = xvfb.Close()
+		}
+		return nil, err
+	}
+
+	browser.xvfb = xvfb
+	return browser, nil
 }
 
 // Stealth injects anti-detection scripts into a rod page.
 // Call before navigating. Scripts persist across navigations.
 func Stealth(page *rod.Page) error {
-	_ = proto.EmulationClearDeviceMetricsOverride{}.Call(page)
+	// _ = proto.EmulationClearDeviceMetricsOverride{}.Call(page)
 
 	for _, script := range StealthScripts() {
 		_, err := proto.PageAddScriptToEvaluateOnNewDocument{

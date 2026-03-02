@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -17,7 +18,7 @@ type devToolsVersion struct {
 	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
 }
 
-func newDirect(ctx context.Context, chromePath string, cfg Config) (*Browser, error) {
+func newDirect(ctx context.Context, chromePath string, cfg Config, xvfb *Xvfb) (*Browser, error) {
 	port, listener, err := freePort()
 	if err != nil {
 		return nil, fmt.Errorf("free port: %w", err)
@@ -30,6 +31,21 @@ func newDirect(ctx context.Context, chromePath string, cfg Config) (*Browser, er
 	}
 
 	cmd := exec.Command(chromePath, chromeArgs(port, userDataDir, cfg)...)
+
+	if xvfb != nil {
+		env := os.Environ()
+		filtered := make([]string, 0, len(env))
+		for _, e := range env {
+			switch {
+			case strings.HasPrefix(e, "DISPLAY="),
+				strings.HasPrefix(e, "WAYLAND_DISPLAY="),
+				strings.HasPrefix(e, "GDK_BACKEND="):
+				continue
+			}
+			filtered = append(filtered, e)
+		}
+		cmd.Env = append(filtered, "DISPLAY="+xvfb.Display)
+	}
 
 	listener.Close()
 	if err := cmd.Start(); err != nil {
@@ -70,6 +86,10 @@ func chromeLaunchArgs(userDataDir string, cfg Config) []string {
 		fmt.Sprintf("--window-size=%d,%d", cfg.WindowWidth, cfg.WindowHeight),
 		fmt.Sprintf("--lang=%s", cfg.Language),
 		"--log-level=0",
+	}
+
+	if cfg.VirtualDisplay {
+		args = append(args, "--ozone-platform=x11")
 	}
 
 	for flag, val := range StealthFlags() {

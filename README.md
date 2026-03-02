@@ -59,6 +59,19 @@ browser, err := unrevealed.New(ctx, unrevealed.Config{
 })
 ```
 
+### Virtual Display (Xvfb)
+
+On Linux, set `VirtualDisplay: true` to run Chrome in a virtual X11 display via Xvfb. This gives you a full headed browser environment without needing a physical display, some bot protections can be avoided this way. Headless mode is automatically disabled when using a virtual display.
+
+```go
+browser, err := unrevealed.New(ctx, unrevealed.Config{
+    VirtualDisplay: true,
+    NoSandbox:      true,
+})
+```
+
+Requires `Xvfb` to be installed.
+
 ## License
 
 MIT
