@@ -72,6 +72,39 @@ browser, err := unrevealed.New(ctx, unrevealed.Config{
 
 Requires `Xvfb` to be installed.
 
+### Minimal Mode
+
+Set `Minimal: true` to block visual/resource-heavy requests (CSS, images, fonts, media, manifests, text tracks, prefetch, ping) browser-wide via CDP request hijacking. HTML and JS keep working normally. Might trigger bot detections that check for missing resources, but can speed up page loads and reduce memory usage when you only care about HTML/JS.
+
+```go
+browser, err := unrevealed.New(ctx, unrevealed.Config{
+    Headless: true,
+    Minimal:  true,
+})
+```
+
+You can also block specific files by name:
+
+```go
+browser, err := unrevealed.New(ctx, unrevealed.Config{
+    Headless:       true,
+    Minimal:        true,
+    BlockFilenames: []string{"analytics.js", "pendo.js"},
+})
+```
+
+### Browser Memory
+
+`BrowserMemory()` returns the aggregated RSS and VMS of the entire browser process tree (root + all child processes), using the OS process table — not just Go runtime memory.
+
+```go
+stats, err := browser.BrowserMemory()
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Browser RSS: %d MB\n", stats.RSS/1024/1024)
+```
+
 ## License
 
 MIT

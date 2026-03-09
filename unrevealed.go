@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync"
 	"time"
 
@@ -28,6 +29,8 @@ type Config struct {
 	NoSandbox         bool          // Add --no-sandbox flag. Required in some environments (e.g. root on Linux).
 	ChromeDriverPath  string        // Path to ChromeDriver executable. If set, will launch through ChromeDriver instead of directly.
 	PatchChromeDriver bool          // Whether to patch ChromeDriver for stealth. Only applies if ChromeDriverPath is not set. Default false.
+	Minimal           bool          // Block visual/resource-heavy requests (CSS, images, fonts, media, etc.) browser-wide. Default false.
+	BlockFilenames    []string      // Optional list of filenames to block regardless of type (e.g. "analytics.js"). Case-insensitive.
 }
 
 func (c *Config) withDefaults() {
@@ -49,12 +52,15 @@ func (c *Config) withDefaults() {
 // providing safe cleanup via [Browser.Close].
 type Browser struct {
 	*rod.Browser
-	cmd     *exec.Cmd
-	tmpDir  string
-	patcher *Patcher
-	xvfb    *Xvfb
-	mu      sync.Mutex
-	closed  bool
+	cmd            *exec.Cmd
+	tmpDir         string
+	patcher        *Patcher
+	xvfb           *Xvfb
+	hijackRouters  []*rod.HijackRouter
+	blockFilenames []string
+	minimal        bool
+	mu             sync.Mutex
+	closed         bool
 }
 
 // Close shuts down the browser, kills Chrome, and removes temporary files.
@@ -68,6 +74,11 @@ func (b *Browser) Close() error {
 	b.closed = true
 
 	var errs []error
+	for _, r := range b.hijackRouters {
+		if err := r.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("stop hijack router: %w", err))
+		}
+	}
 	if b.Browser != nil {
 		if err := b.Browser.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close browser: %w", err))
@@ -95,6 +106,9 @@ func New(ctx context.Context, cfg Config) (*Browser, error) {
 
 	var xvfb *Xvfb
 	if cfg.VirtualDisplay {
+		if runtime.GOOS != "linux" {
+			return nil, fmt.Errorf("virtual display is only supported on Linux")
+		}
 		cfg.Headless = false
 		var err error
 		xvfb, err = StartXvfb(cfg.WindowWidth, cfg.WindowHeight)
@@ -125,6 +139,25 @@ func New(ctx context.Context, cfg Config) (*Browser, error) {
 	}
 
 	browser.xvfb = xvfb
+
+	if cfg.Minimal {
+		browser.minimal = true
+		browser.blockFilenames = cfg.BlockFilenames
+		pages, err := browser.Pages()
+		if err != nil {
+			browser.Close()
+			return nil, fmt.Errorf("list pages for minimal mode: %w", err)
+		}
+		for _, page := range pages {
+			router, err := enableMinimalMode(page, cfg.BlockFilenames)
+			if err != nil {
+				browser.Close()
+				return nil, fmt.Errorf("enable minimal mode: %w", err)
+			}
+			browser.hijackRouters = append(browser.hijackRouters, router)
+		}
+	}
+
 	return browser, nil
 }
 

@@ -122,3 +122,72 @@ func TestNewWithChromeDriver(t *testing.T) {
 		t.Errorf("navigator.webdriver should be undefined, got %v", result)
 	}
 }
+
+func TestMinimalMode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping browser test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	browser, err := unrevealed.New(ctx, unrevealed.Config{
+		Headless:  false,
+		NoSandbox: true,
+		Minimal:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browser.Close()
+
+	page := browser.MustPages()[0]
+	if err := unrevealed.Stealth(page); err != nil {
+		t.Fatal("stealth injection failed:", err)
+	}
+
+	page.MustNavigate("https://www.w3schools.com/").MustWaitStable()
+
+	// Log resource counts so the user can visually confirm blocking.
+	extSheets := page.MustEval(`() =>
+		Array.from(document.styleSheets).filter(s => s.href).length
+	`).Int()
+	totalImgs := page.MustEval(`() => document.querySelectorAll('img').length`).Int()
+	brokenImgs := page.MustEval(`() =>
+		Array.from(document.querySelectorAll('img')).filter(img => img.naturalWidth === 0).length
+	`).Int()
+
+	t.Logf("external stylesheets: %d, images: %d total / %d broken", extSheets, totalImgs, brokenImgs)
+}
+
+func TestBrowserMemory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping browser test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	browser, err := unrevealed.New(ctx, unrevealed.Config{
+		Headless:  true,
+		NoSandbox: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browser.Close()
+
+	stats, err := browser.BrowserMemory()
+	if err != nil {
+		t.Fatal("BrowserMemory failed:", err)
+	}
+
+	if stats.RSS == 0 {
+		t.Error("expected non-zero RSS for running browser")
+	}
+	if stats.VMS == 0 {
+		t.Error("expected non-zero VMS for running browser")
+	}
+
+	t.Logf("browser tree RSS: %d MB, VMS: %d MB", stats.RSS/1024/1024, stats.VMS/1024/1024)
+}
